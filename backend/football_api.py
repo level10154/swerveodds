@@ -90,6 +90,8 @@ TOP_COMPETITIONS = [
     {"code": "CL", "id": 2001, "name": "Champions League", "country": "Europe", "emblem": "https://crests.football-data.org/CL.png"},
     {"code": "ELC", "id": 2016, "name": "Championship", "country": "England", "emblem": "https://crests.football-data.org/ELC.png"},
     {"code": "CLI", "id": 2152, "name": "Copa Libertadores", "country": "South America", "emblem": "https://crests.football-data.org/CLI.png"},
+    {"code": "WC", "id": 2000, "name": "FIFA World Cup", "country": "World", "emblem": "https://crests.football-data.org/WC.png"},
+    {"code": "EC", "id": 2018, "name": "European Championship", "country": "Europe", "emblem": "https://crests.football-data.org/EC.png"},
 ]
 
 

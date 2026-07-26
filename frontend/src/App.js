@@ -9,6 +9,7 @@ import Predictions from "./pages/Predictions";
 import MatchDetail from "./pages/MatchDetail";
 import LeaguePage from "./pages/LeaguePage";
 import Leagues from "./pages/Leagues";
+import WorldLeaguePage from "./pages/WorldLeaguePage";
 import StatsHub from "./pages/StatsHub";
 import BetOfDay from "./pages/BetOfDay";
 
@@ -24,6 +25,7 @@ function App() {
           <Route path="/bet-of-the-day" element={<BetOfDay />} />
           <Route path="/leagues" element={<Leagues />} />
           <Route path="/league/:code" element={<LeaguePage />} />
+          <Route path="/world-league/:ref" element={<WorldLeaguePage />} />
           <Route path="/stats" element={<StatsHub />} />
           <Route path="/match/:id" element={<MatchDetail />} />
         </Routes>
