@@ -1,30 +1,33 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Sparkles, Trophy, TrendingUp, Zap, ChevronRight, Star } from "lucide-react";
+import { Sparkles, Trophy, TrendingUp, Zap, ChevronRight, Star, Radio } from "lucide-react";
 import { Button } from "../components/ui/button";
 import MatchCard from "../components/MatchCard";
 import BetOfDayCard from "../components/BetOfDayCard";
 import StandingsTable from "../components/StandingsTable";
-import { getPredictionsToday, getBetOfTheDay, getStandings, getCompetitions } from "../lib/api";
+import { getPredictionsToday, getBetOfTheDay, getStandings, getCompetitions, getGlobalLive } from "../lib/api";
 
 export default function Home() {
   const [predictions, setPredictions] = useState([]);
   const [botd, setBotd] = useState(null);
   const [standings, setStandings] = useState(null);
   const [competitions, setCompetitions] = useState([]);
+  const [live, setLive] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const [c, preds] = await Promise.all([
+        const [c, preds, liveData] = await Promise.all([
           getCompetitions().catch(() => ({ competitions: [] })),
           getPredictionsToday(4).catch(() => ({ matches: [] })),
+          getGlobalLive(12).catch(() => ({ matches: [] })),
         ]);
         if (!alive) return;
         setCompetitions(c.competitions || []);
         setPredictions(preds.matches || []);
+        setLive(liveData.matches || []);
         // Sequential to avoid rate limit
         const bod = await getBetOfTheDay().catch(() => null);
         if (!alive) return;
@@ -36,7 +39,11 @@ export default function Home() {
         if (alive) setLoading(false);
       }
     })();
-    return () => { alive = false; };
+    // Refresh live matches every 2 min
+    const interval = setInterval(() => {
+      getGlobalLive(12).then((d) => setLive(d.matches || [])).catch(() => {});
+    }, 120000);
+    return () => { alive = false; clearInterval(interval); };
   }, []);
 
   return (
@@ -71,6 +78,61 @@ export default function Home() {
       <section className="mx-auto max-w-7xl px-4 md:px-6 -mt-10 relative z-10">
         <BetOfDayCard match={botd} loading={loading && !botd} />
       </section>
+
+      {/* LIVE NOW */}
+      {live.length > 0 && (
+        <section className="mx-auto max-w-7xl px-4 md:px-6 mt-14">
+          <div className="flex items-end justify-between mb-5">
+            <div>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Radio className="w-5 h-5 text-rose-400" />
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-rose-500 rounded-full animate-pulse" />
+                </div>
+                <h2 className="text-2xl md:text-3xl font-black tracking-tight">Live Now</h2>
+                <span className="text-xs bg-rose-500/15 border border-rose-500/30 text-rose-300 px-2 py-0.5 rounded-md font-semibold">{live.length}+</span>
+              </div>
+              <p className="text-slate-400 text-sm mt-1">Real-time worldwide football, auto-refreshing every 2 minutes</p>
+            </div>
+            <Link to="/live" className="text-purple-400 text-sm hover:text-purple-300 inline-flex items-center gap-1">
+              View all live <ChevronRight className="w-4 h-4" />
+            </Link>
+          </div>
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {live.slice(0, 6).map((m) => {
+              const s = m.score?.fullTime || {};
+              const hs = s.home ?? 0;
+              const as_ = s.away ?? 0;
+              return (
+                <div key={m.id} className="nt-card rounded-xl p-3 relative overflow-hidden">
+                  <div className="absolute top-2 right-2 flex items-center gap-1 text-[10px] font-bold text-rose-300">
+                    <span className="w-1.5 h-1.5 bg-rose-500 rounded-full animate-pulse" /> LIVE
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mb-2">
+                    {m.competition?.emblem && <img src={m.competition.emblem} alt="" className="w-3.5 h-3.5" onError={(e)=>{e.currentTarget.style.display='none';}} />}
+                    <span className="truncate">{m.competition?.name}</span>
+                  </div>
+                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      {m.homeTeam?.crest && <img src={m.homeTeam.crest} alt="" className="w-5 h-5 object-contain" onError={(e)=>{e.currentTarget.style.opacity='0.2';}} />}
+                      <span className="text-sm font-semibold truncate">{m.homeTeam?.shortName || m.homeTeam?.name}</span>
+                    </div>
+                    <div className="text-center font-black text-lg">
+                      <span className={hs > as_ ? "text-emerald-400" : ""}>{hs}</span>
+                      <span className="text-slate-500 mx-1">-</span>
+                      <span className={as_ > hs ? "text-emerald-400" : ""}>{as_}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 justify-end min-w-0">
+                      <span className="text-sm font-semibold truncate text-right">{m.awayTeam?.shortName || m.awayTeam?.name}</span>
+                      {m.awayTeam?.crest && <img src={m.awayTeam.crest} alt="" className="w-5 h-5 object-contain" onError={(e)=>{e.currentTarget.style.opacity='0.2';}} />}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* TODAY'S PREDICTIONS */}
       <section className="mx-auto max-w-7xl px-4 md:px-6 mt-14">

@@ -12,6 +12,10 @@ export const getWorldLeagueNext = (ref) => api.get(`/world/league/${ref}/next`).
 export const getWorldLeagueTable = (ref) => api.get(`/world/league/${ref}/table`).then(r => r.data);
 export const getApifStatus = () => api.get("/apif/status").then(r => r.data);
 export const getApifFixtures = (date) => api.get(`/apif/fixtures?date=${date}`).then(r => r.data);
+export const getGlobalLive = (limit = 40) => api.get(`/global/live?limit=${limit}`).then(r => r.data);
+export const getGlobalTournaments = () => api.get("/global/tournaments").then(r => r.data);
+export const getGlobalTournamentStandings = (tid, season) => api.get(`/global/tournament/${tid}/standings${season ? `?season=${season}` : ""}`).then(r => r.data);
+export const getGlobalTournamentEvents = (tid, season) => api.get(`/global/tournament/${tid}/events${season ? `?season=${season}` : ""}`).then(r => r.data);
 export const getPredictionsToday = (limit = 12) => api.get(`/predictions/today?limit=${limit}`).then(r => r.data);
 export const getPredictionsUpcoming = (days = 3, limit = 20) => api.get(`/predictions/upcoming?days=${days}&limit=${limit}`).then(r => r.data);
 export const getBetOfTheDay = () => api.get("/predictions/bet-of-the-day").then(r => r.data);

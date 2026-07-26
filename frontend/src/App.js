@@ -10,6 +10,7 @@ import MatchDetail from "./pages/MatchDetail";
 import LeaguePage from "./pages/LeaguePage";
 import Leagues from "./pages/Leagues";
 import WorldLeaguePage from "./pages/WorldLeaguePage";
+import LiveMatches from "./pages/LiveMatches";
 import StatsHub from "./pages/StatsHub";
 import BetOfDay from "./pages/BetOfDay";
 
@@ -26,6 +27,7 @@ function App() {
           <Route path="/leagues" element={<Leagues />} />
           <Route path="/league/:code" element={<LeaguePage />} />
           <Route path="/world-league/:ref" element={<WorldLeaguePage />} />
+          <Route path="/live" element={<LiveMatches />} />
           <Route path="/stats" element={<StatsHub />} />
           <Route path="/match/:id" element={<MatchDetail />} />
         </Routes>

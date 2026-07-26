@@ -11,7 +11,7 @@ from typing import Any
 
 import football_api as fa
 import sports_db as tsdb
-import api_football as apif
+import api_football as sa7  # SportApi7 (SofaScore mirror)
 from predictor import predict
 
 ROOT_DIR = Path(__file__).parent
@@ -104,12 +104,26 @@ async def world_leagues():
             "source": "thesportsdb",
             "predictions": False,
         })
+    # SportApi7 tournaments (only unique ones not covered above)
+    seen_names = {c["name"].lower() for c in combined}
+    for t in sa7.TOURNAMENTS:
+        if t["name"].lower() in seen_names:
+            continue
+        combined.append({
+            "id": f"sa7-{t['id']}",
+            "code": t["code"],
+            "name": t["name"],
+            "country": t["country"],
+            "emblem": None,
+            "source": "sportapi7",
+            "predictions": False,
+        })
     return {"count": len(combined), "leagues": combined}
 
 
 @api_router.get("/world/matches/today")
 async def world_matches_today():
-    """Aggregate today's matches from football-data + TheSportsDB."""
+    """Aggregate today's matches from football-data + TheSportsDB + SportApi7 live."""
     from datetime import datetime as _dt
     date = _dt.utcnow().strftime("%Y-%m-%d")
     matches = []
@@ -119,6 +133,13 @@ async def world_matches_today():
             matches.append(_serialize_match(m))
     except Exception as e:
         logger.warning(f"fd today failed: {e}")
+    # SportApi7 live events (worldwide)
+    try:
+        d = await sa7.live_events(db)
+        for e in d.get("events") or []:
+            matches.append(sa7.normalize_event(e))
+    except Exception as e:
+        logger.warning(f"sa7 live failed: {e}")
     # TheSportsDB day events
     try:
         d = await tsdb.day_events(db, date)
@@ -130,7 +151,7 @@ async def world_matches_today():
     seen = set()
     unique = []
     for m in matches:
-        key = f"{(m.get('homeTeam') or {}).get('name','')}-{(m.get('awayTeam') or {}).get('name','')}-{(m.get('utcDate') or '')[:10]}"
+        key = f"{(m.get('homeTeam') or {}).get('name','').lower()}-{(m.get('awayTeam') or {}).get('name','').lower()}-{(m.get('utcDate') or '')[:10]}"
         if key in seen:
             continue
         seen.add(key)
@@ -205,28 +226,83 @@ async def world_league_table(league_ref: str):
 
 @api_router.get("/apif/status")
 async def apif_status():
-    """Check API-Football subscription status."""
-    data = await apif.status(db)
-    resp = (data.get("response") or {})
+    """Check SportApi7 subscription status via live-events endpoint."""
+    data = await sa7.live_events(db)
     if data.get("error"):
-        return {"subscribed": False, "error": data.get("error"), "message": "Subscribe to API-Football free plan on RapidAPI marketplace to unlock 1000+ leagues."}
-    return {"subscribed": True, "account": resp.get("account"), "subscription": resp.get("subscription"), "requests": resp.get("requests")}
+        return {"subscribed": False, "error": data.get("error"), "message": "Subscribe to SportApi7 on RapidAPI to unlock 5000+ leagues worldwide."}
+    return {"subscribed": True, "live_events_count": len(data.get("events") or [])}
+
+
+@api_router.get("/global/live")
+async def global_live(limit: int = 40):
+    """Live worldwide football matches from SportApi7."""
+    data = await sa7.live_events(db)
+    events = data.get("events") or []
+    # Prioritise higher-tier leagues (category priority high or matches with lots of viewers)
+    events.sort(key=lambda e: -(((e.get("tournament") or {}).get("category") or {}).get("priority", 0) or 0))
+    matches = [sa7.normalize_event(e) for e in events[:limit]]
+    return {"count": len(matches), "matches": matches}
+
+
+@api_router.get("/global/tournaments")
+async def global_tournaments():
+    """Curated worldwide tournament list from SportApi7."""
+    return {"count": len(sa7.TOURNAMENTS), "tournaments": sa7.TOURNAMENTS}
+
+
+@api_router.get("/global/tournament/{tid}/standings")
+async def global_tournament_standings(tid: int, season: int | None = None):
+    if season is None:
+        # Find latest season from curated list or fetch seasons
+        for t in sa7.TOURNAMENTS:
+            if t["id"] == tid:
+                season = t["season"]
+                break
+        if season is None:
+            seas = await sa7.tournament_seasons(db, tid)
+            if seas.get("seasons"):
+                season = seas["seasons"][0]["id"]
+    if not season:
+        raise HTTPException(status_code=400, detail="Season required")
+    data = await sa7.standings(db, tid, season)
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=data.get("error"))
+    return data
+
+
+@api_router.get("/global/tournament/{tid}/events")
+async def global_tournament_events(tid: int, season: int | None = None, page: int = 0):
+    if season is None:
+        for t in sa7.TOURNAMENTS:
+            if t["id"] == tid:
+                season = t["season"]
+                break
+    if not season:
+        raise HTTPException(status_code=400, detail="Season required")
+    last = await sa7.events_last(db, tid, season, page)
+    events = last.get("events") or []
+    matches = [sa7.normalize_event(e) for e in events]
+    return {"count": len(matches), "matches": matches}
+
+
+@api_router.get("/global/team/{tid}/next")
+async def global_team_next(tid: int):
+    data = await sa7.team_next(db, tid)
+    events = data.get("events") or []
+    return {"count": len(events), "matches": [sa7.normalize_event(e) for e in events]}
 
 
 @api_router.get("/apif/leagues")
 async def apif_leagues():
-    data = await apif.leagues(db, current=True)
-    if data.get("error"):
-        raise HTTPException(status_code=402, detail=data.get("error"))
-    return {"count": len(data.get("response") or []), "leagues": data.get("response") or []}
+    return {"count": len(sa7.TOURNAMENTS), "tournaments": sa7.TOURNAMENTS}
 
 
 @api_router.get("/apif/fixtures")
 async def apif_fixtures(date: str):
-    data = await apif.fixtures_by_date(db, date)
-    if data.get("error"):
-        raise HTTPException(status_code=402, detail=data.get("error"))
-    return {"count": len(data.get("response") or []), "matches": [apif.normalize_fixture(f) for f in (data.get("response") or [])]}
+    # SportApi7 doesn't have date-based schedules; return live + curated tournaments' recent events
+    data = await sa7.live_events(db)
+    events = data.get("events") or []
+    return {"count": len(events), "matches": [sa7.normalize_event(e) for e in events]}
 
 
 @api_router.get("/matches/today")
