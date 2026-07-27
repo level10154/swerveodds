@@ -76,35 +76,36 @@ async def _get(db, cache_key: str, kind: str, path: str) -> dict:
     return data
 
 
-# --- Curated tournament IDs (SofaScore/SportApi7). Free tier friendly. ---
-# Includes leagues NOT already covered by football-data.org so we don't duplicate.
+# --- Curated tournament IDs (SofaScore/SportApi7). Season is fetched dynamically. ---
+# IDs verified from live events response.
 TOURNAMENTS = [
-    # Football-data has these too, but SportApi7 gives richer live data
-    {"id": 17, "name": "Premier League", "country": "England", "season": 76986, "code": "PL"},
-    {"id": 8, "name": "La Liga", "country": "Spain", "season": 77559, "code": "PD"},
-    {"id": 35, "name": "Bundesliga", "country": "Germany", "season": 77333, "code": "BL1"},
-    {"id": 23, "name": "Serie A", "country": "Italy", "season": 76457, "code": "SA"},
-    {"id": 34, "name": "Ligue 1", "country": "France", "season": 77356, "code": "FL1"},
-    # Extra worldwide leagues (SportApi7 exclusive)
-    {"id": 242, "name": "Major League Soccer", "country": "United States", "season": 71156, "code": "MLS"},
-    {"id": 325, "name": "J1 League", "country": "Japan", "season": 70083, "code": "JP1"},
-    {"id": 955, "name": "Saudi Pro League", "country": "Saudi Arabia", "season": 77341, "code": "SPL"},
-    {"id": 155, "name": "Liga MX", "country": "Mexico", "season": 77067, "code": "MXL"},
-    {"id": 265, "name": "Argentine Primera", "country": "Argentina", "season": 72711, "code": "APD"},
-    {"id": 52, "name": "Eredivisie", "country": "Netherlands", "season": 76841, "code": "DED"},
-    {"id": 238, "name": "Primeira Liga", "country": "Portugal", "season": 77338, "code": "PPL"},
-    {"id": 55, "name": "Chinese Super League", "country": "China", "season": 76693, "code": "CSL"},
-    {"id": 71, "name": "Turkish S\u00fcper Lig", "country": "Turkey", "season": 77191, "code": "TSL"},
-    {"id": 39, "name": "Jupiler Pro League", "country": "Belgium", "season": 77338, "code": "BE1"},
-    {"id": 82, "name": "Scottish Premiership", "country": "Scotland", "season": 77128, "code": "SPL2"},
-    {"id": 152, "name": "A-League", "country": "Australia", "season": 67552, "code": "AAL"},
-    {"id": 296, "name": "K League 1", "country": "South Korea", "season": 77477, "code": "KR1"},
-    {"id": 27, "name": "Serie B", "country": "Italy", "season": 76458, "code": "ITB"},
-    {"id": 25, "name": "Bundesliga 2", "country": "Germany", "season": 77335, "code": "BL2"},
-    {"id": 384, "name": "Brasileir\u00e3o", "country": "Brazil", "season": 72032, "code": "BSA"},
-    {"id": 24, "name": "Championship", "country": "England", "season": 76988, "code": "ELC"},
-    {"id": 7, "name": "Champions League", "country": "Europe", "season": 76953, "code": "CL"},
-    {"id": 679, "name": "Europa League", "country": "Europe", "season": 76984, "code": "EL"},
+    # In-season worldwide leagues (verified live)
+    {"id": 649, "name": "Chinese Super League", "country": "China", "code": "CSL"},
+    {"id": 40, "name": "Allsvenskan", "country": "Sweden", "code": "SE1"},
+    {"id": 215, "name": "Swiss Super League", "country": "Switzerland", "code": "CH1"},
+    {"id": 410, "name": "K League 1", "country": "South Korea", "code": "KR1"},
+    {"id": 39, "name": "Danish Superliga", "country": "Denmark", "code": "DK1"},
+    {"id": 41, "name": "Veikkausliiga", "country": "Finland", "code": "FI1"},
+    {"id": 47, "name": "Betinia Liga", "country": "Poland", "code": "PL2"},
+    {"id": 777, "name": "K League 2", "country": "South Korea", "code": "KR2"},
+    {"id": 782, "name": "Chinese League 1", "country": "China", "code": "CSL2"},
+    # Big European leagues (will be in-season Aug+)
+    {"id": 17, "name": "Premier League", "country": "England", "code": "PL"},
+    {"id": 8, "name": "La Liga", "country": "Spain", "code": "PD"},
+    {"id": 35, "name": "Bundesliga", "country": "Germany", "code": "BL1"},
+    {"id": 23, "name": "Serie A", "country": "Italy", "code": "SA"},
+    {"id": 34, "name": "Ligue 1", "country": "France", "code": "FL1"},
+    # Other worldwide leagues
+    {"id": 242, "name": "Major League Soccer", "country": "United States", "code": "MLS"},
+    {"id": 325, "name": "J1 League", "country": "Japan", "code": "JP1"},
+    {"id": 955, "name": "Saudi Pro League", "country": "Saudi Arabia", "code": "SPL"},
+    {"id": 384, "name": "Brasileir\u00e3o", "country": "Brazil", "code": "BSA"},
+    {"id": 155, "name": "Liga MX", "country": "Mexico", "code": "MXL"},
+    {"id": 265, "name": "Argentine Primera", "country": "Argentina", "code": "APD"},
+    {"id": 71, "name": "Turkish S\u00fcper Lig", "country": "Turkey", "code": "TSL"},
+    {"id": 152, "name": "A-League", "country": "Australia", "code": "AAL"},
+    {"id": 39, "name": "Jupiter Pro League", "country": "Belgium", "code": "BE1"},
+    {"id": 7, "name": "Champions League", "country": "Europe", "code": "CL"},
 ]
 
 
@@ -150,6 +151,27 @@ async def team_next(db, tid: int, page: int = 0):
 
 async def event_detail(db, eid: int):
     return await _get(db, f"event:{eid}", "event", f"/api/v1/event/{eid}")
+
+
+def sa7_events_to_predictor_format(events: list[dict]) -> list[dict]:
+    """Convert SportApi7 last events into the shape our predictor expects
+    (homeTeam.id, awayTeam.id, score.fullTime.home/away, status)."""
+    out = []
+    for e in events:
+        st = ((e.get("status") or {}).get("type") or "").lower()
+        if st != "finished":
+            continue
+        hs = (e.get("homeScore") or {}).get("current")
+        as_ = (e.get("awayScore") or {}).get("current")
+        if hs is None or as_ is None:
+            continue
+        out.append({
+            "status": "FINISHED",
+            "homeTeam": {"id": (e.get("homeTeam") or {}).get("id")},
+            "awayTeam": {"id": (e.get("awayTeam") or {}).get("id")},
+            "score": {"fullTime": {"home": hs, "away": as_}},
+        })
+    return out
 
 
 def _status_from_sofa(e: dict) -> str:

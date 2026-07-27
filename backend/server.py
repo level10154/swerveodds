@@ -253,15 +253,7 @@ async def global_tournaments():
 @api_router.get("/global/tournament/{tid}/standings")
 async def global_tournament_standings(tid: int, season: int | None = None):
     if season is None:
-        # Find latest season from curated list or fetch seasons
-        for t in sa7.TOURNAMENTS:
-            if t["id"] == tid:
-                season = t["season"]
-                break
-        if season is None:
-            seas = await sa7.tournament_seasons(db, tid)
-            if seas.get("seasons"):
-                season = seas["seasons"][0]["id"]
+        season = await _get_current_season(tid)
     if not season:
         raise HTTPException(status_code=400, detail="Season required")
     data = await sa7.standings(db, tid, season)
@@ -273,10 +265,7 @@ async def global_tournament_standings(tid: int, season: int | None = None):
 @api_router.get("/global/tournament/{tid}/events")
 async def global_tournament_events(tid: int, season: int | None = None, page: int = 0):
     if season is None:
-        for t in sa7.TOURNAMENTS:
-            if t["id"] == tid:
-                season = t["season"]
-                break
+        season = await _get_current_season(tid)
     if not season:
         raise HTTPException(status_code=400, detail="Season required")
     last = await sa7.events_last(db, tid, season, page)
@@ -290,6 +279,131 @@ async def global_team_next(tid: int):
     data = await sa7.team_next(db, tid)
     events = data.get("events") or []
     return {"count": len(events), "matches": [sa7.normalize_event(e) for e in events]}
+
+
+async def _build_prediction_sa7(home_id: int, away_id: int, match_key: str | None = None) -> dict:
+    """Build prediction using SportApi7 team last-events data. Cached per (home,away)."""
+    cache_id = match_key or f"sa7-{home_id}-{away_id}"
+    doc = await db.prediction_cache.find_one({"_id": cache_id})
+    if doc and doc.get("expires_at") and doc["expires_at"] > datetime.utcnow():
+        return doc["data"]
+    try:
+        home_data = await sa7.team_last(db, home_id)
+        away_data = await sa7.team_last(db, away_id)
+    except Exception as e:
+        logger.warning(f"sa7 team fetch failed: {e}")
+        home_data = {"events": []}
+        away_data = {"events": []}
+    home_matches = sa7.sa7_events_to_predictor_format(home_data.get("events", []))
+    away_matches = sa7.sa7_events_to_predictor_format(away_data.get("events", []))
+    pred = predict(home_matches, away_matches, home_id, away_id)
+    await db.prediction_cache.update_one(
+        {"_id": cache_id},
+        {"$set": {"data": pred, "expires_at": datetime.utcnow() + timedelta(minutes=30)}},
+        upsert=True,
+    )
+    return pred
+
+
+async def _get_current_season(tid: int) -> int | None:
+    """Fetch the latest season ID for a tournament (cached)."""
+    try:
+        data = await sa7.tournament_seasons(db, tid)
+        seasons = data.get("seasons") or []
+        if seasons:
+            return seasons[0].get("id")
+    except Exception:
+        pass
+    # Fallback to hard-coded (no longer stored)
+    return None
+
+
+@api_router.get("/global/predictions/tournament/{tid}")
+async def global_predictions_tournament(tid: int, season: int | None = None, limit: int = 10):
+    """Upcoming matches for a SportApi7 tournament with AI predictions computed from real team form."""
+    if season is None:
+        season = await _get_current_season(tid)
+    if not season:
+        return {"count": 0, "matches": [], "error": "Season data unavailable (API quota may be reached)"}
+    # Get current round
+    matches = []
+    try:
+        rounds_data = await sa7.tournament_rounds(db, tid, season)
+        current_round = (rounds_data.get("currentRound") or {}).get("round") or 1
+    except Exception:
+        current_round = 1
+    # Try current round and up to 2 next rounds
+    for r in [current_round, current_round + 1, current_round + 2]:
+        try:
+            data = await sa7.events_round(db, tid, season, r)
+            for e in data.get("events", []):
+                st = ((e.get("status") or {}).get("type") or "").lower()
+                if st in ("notstarted", "inprogress"):
+                    matches.append(e)
+        except Exception:
+            continue
+        if len(matches) >= limit:
+            break
+    matches = matches[:limit]
+    out = []
+    for e in matches:
+        home_id = (e.get("homeTeam") or {}).get("id")
+        away_id = (e.get("awayTeam") or {}).get("id")
+        pred = None
+        if home_id and away_id:
+            try:
+                pred = await _build_prediction_sa7(home_id, away_id, match_key=f"sa7-event-{e.get('id')}")
+            except Exception as ex:
+                logger.warning(f"sa7 pred failed: {ex}")
+        norm = sa7.normalize_event(e)
+        norm["prediction"] = pred
+        out.append(norm)
+    return {"count": len(out), "matches": out}
+
+
+@api_router.get("/global/predictions/live")
+async def global_predictions_live(limit: int = 12):
+    """Live matches worldwide with AI predictions attached."""
+    data = await sa7.live_events(db)
+    events = data.get("events") or []
+    if data.get("error"):
+        return {"count": 0, "matches": [], "error": "API quota reached"}
+    # Prioritise major tournaments
+    priority_ids = {t["id"] for t in sa7.TOURNAMENTS}
+    events.sort(key=lambda e: 0 if ((e.get("tournament", {}).get("uniqueTournament") or {}).get("id") in priority_ids) else 1)
+    events = events[:limit]
+    out = []
+    for e in events:
+        home_id = (e.get("homeTeam") or {}).get("id")
+        away_id = (e.get("awayTeam") or {}).get("id")
+        pred = None
+        if home_id and away_id:
+            try:
+                pred = await _build_prediction_sa7(home_id, away_id, match_key=f"sa7-event-{e.get('id')}")
+            except Exception as ex:
+                logger.warning(f"live pred failed: {ex}")
+        norm = sa7.normalize_event(e)
+        norm["prediction"] = pred
+        out.append(norm)
+    return {"count": len(out), "matches": out}
+
+
+@api_router.get("/global/predictions/upcoming")
+async def global_predictions_upcoming(limit: int = 12):
+    """Aggregate upcoming SportApi7 predictions across our curated tournaments."""
+    out = []
+    per_league = max(1, limit // 6)
+    for t in sa7.TOURNAMENTS[:8]:  # cover top 8 tournaments
+        try:
+            data = await global_predictions_tournament(t["id"], None, per_league)
+            out.extend(data.get("matches", []))
+        except Exception as ex:
+            logger.warning(f"skipping {t['name']}: {ex}")
+        if len(out) >= limit:
+            break
+    # Sort by kickoff time
+    out.sort(key=lambda m: m.get("utcDate") or "")
+    return {"count": len(out), "matches": out[:limit]}
 
 
 @api_router.get("/apif/leagues")
@@ -345,12 +459,15 @@ async def predictions_today(limit: int = 12):
 
 
 @api_router.get("/predictions/upcoming")
-async def predictions_upcoming(days: int = 3, limit: int = 12):
-    limit = min(limit, 15)
+async def predictions_upcoming(days: int = 14, limit: int = 24):
+    limit = min(limit, 30)
+    days = min(days, 30)
     date_from = datetime.utcnow().strftime("%Y-%m-%d")
     date_to = (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
     data = await fa.get_matches_for_date_range(db, date_from, date_to)
     matches = [m for m in data.get("matches", []) if m.get("status") in ("TIMED", "SCHEDULED")]
+    # Sort by date so users see soonest first
+    matches.sort(key=lambda m: m.get("utcDate") or "")
     matches = matches[:limit]
     out = []
     for m in matches:

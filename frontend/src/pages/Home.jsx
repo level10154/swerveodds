@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button";
 import MatchCard from "../components/MatchCard";
 import BetOfDayCard from "../components/BetOfDayCard";
 import StandingsTable from "../components/StandingsTable";
-import { getPredictionsToday, getBetOfTheDay, getStandings, getCompetitions, getGlobalLive } from "../lib/api";
+import { getPredictionsToday, getPredictionsUpcoming, getBetOfTheDay, getStandings, getCompetitions, getGlobalLive } from "../lib/api";
 
 export default function Home() {
   const [predictions, setPredictions] = useState([]);
@@ -26,7 +26,15 @@ export default function Home() {
         ]);
         if (!alive) return;
         setCompetitions(c.competitions || []);
-        setPredictions(preds.matches || []);
+        let preview = preds.matches || [];
+        // If today has few matches (season break), fall back to upcoming 14 days
+        if (preview.length < 3) {
+          try {
+            const up = await getPredictionsUpcoming(14, 9);
+            preview = up.matches || preview;
+          } catch { /* ignore */ }
+        }
+        setPredictions(preview);
         setLive(liveData.matches || []);
         // Sequential to avoid rate limit
         const bod = await getBetOfTheDay().catch(() => null);
@@ -138,8 +146,8 @@ export default function Home() {
       <section className="mx-auto max-w-7xl px-4 md:px-6 mt-14">
         <div className="flex items-end justify-between mb-5">
           <div>
-            <h2 className="text-2xl md:text-3xl font-black tracking-tight">Today's AI Predictions</h2>
-            <p className="text-slate-400 text-sm mt-1">Top matches with 1X2, BTTS and Over/Under picks</p>
+            <h2 className="text-2xl md:text-3xl font-black tracking-tight">Upcoming AI Predictions</h2>
+            <p className="text-slate-400 text-sm mt-1">Top upcoming matches (next 14 days) with 1X2, BTTS and Over/Under picks. Most European leagues resume Aug 6.</p>
           </div>
           <Link to="/predictions" className="text-purple-400 text-sm hover:text-purple-300 inline-flex items-center gap-1">
             View all <ChevronRight className="w-4 h-4" />

@@ -96,8 +96,36 @@ TOP_COMPETITIONS = [
 
 
 async def get_matches_for_date_range(db, date_from: str, date_to: str):
-    key = f"matches:{date_from}:{date_to}"
-    return await cached_get(db, key, "matches_range", "/matches", {"dateFrom": date_from, "dateTo": date_to})
+    """Football-data.org caps range at 10 days. Auto-paginate if needed."""
+    from datetime import datetime as _dt, timedelta as _td
+    d1 = _dt.strptime(date_from, "%Y-%m-%d")
+    d2 = _dt.strptime(date_to, "%Y-%m-%d")
+    span_days = (d2 - d1).days
+    if span_days <= 10:
+        key = f"matches:{date_from}:{date_to}"
+        return await cached_get(db, key, "matches_range", "/matches", {"dateFrom": date_from, "dateTo": date_to})
+    # Multi-window aggregation
+    all_matches = []
+    cur = d1
+    while cur < d2:
+        end = min(cur + _td(days=10), d2)
+        cf, ct = cur.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        key = f"matches:{cf}:{ct}"
+        try:
+            chunk = await cached_get(db, key, "matches_range", "/matches", {"dateFrom": cf, "dateTo": ct})
+            all_matches.extend(chunk.get("matches", []))
+        except Exception:
+            pass
+        cur = end
+    # Dedupe by id
+    seen = set()
+    unique = []
+    for m in all_matches:
+        if m.get("id") in seen:
+            continue
+        seen.add(m.get("id"))
+        unique.append(m)
+    return {"matches": unique, "resultSet": {"count": len(unique)}}
 
 
 async def get_today_matches(db):

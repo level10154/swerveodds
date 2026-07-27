@@ -288,6 +288,64 @@ def test_predictions_upcoming():
         log_result("predictions/upcoming", False, f"Exception: {str(e)}", None)
         return None
 
+def test_predictions_upcoming_expanded():
+    """Test GET /api/predictions/upcoming?days=14&limit=10 - expanded window for worldwide coverage"""
+    print("\n" + "="*80)
+    print("TEST 4B: GET /api/predictions/upcoming?days=14&limit=10 (EXPANDED WINDOW)")
+    print("="*80)
+    
+    try:
+        time.sleep(7)  # Rate limit
+        response = requests.get(f"{BASE_URL}/predictions/upcoming?days=14&limit=10", timeout=60)
+        
+        if response.status_code >= 500:
+            log_result("predictions/upcoming_14days", False, f"5xx error: {response.status_code}", response.text)
+            return None
+        
+        if response.status_code != 200:
+            log_result("predictions/upcoming_14days", False, f"Non-200 status: {response.status_code}", response.text)
+            return None
+        
+        data = response.json()
+        
+        if "count" not in data or "matches" not in data:
+            log_result("predictions/upcoming_14days", False, "Missing count or matches key", data)
+            return None
+        
+        matches = data["matches"]
+        if not isinstance(matches, list):
+            log_result("predictions/upcoming_14days", False, "matches is not a list", matches)
+            return None
+        
+        if matches:
+            # Validate each match has prediction
+            for i, match in enumerate(matches):
+                if "prediction" not in match:
+                    log_result("predictions/upcoming_14days", False, f"Match {i} missing prediction", match)
+                    return None
+                
+                if not validate_prediction_structure(match["prediction"], f"predictions/upcoming_14days[{i}]"):
+                    return None
+            
+            # Check for league diversity (should have more than just Brazilian league)
+            leagues = set()
+            for match in matches:
+                comp_name = match.get("competition", {}).get("name", "")
+                if comp_name:
+                    leagues.add(comp_name)
+            
+            log_result("predictions/upcoming_14days", True, 
+                      f"Got {len(matches)} matches from {len(leagues)} leagues with valid predictions",
+                      {"leagues": list(leagues), "sample_prediction": matches[0]["prediction"]})
+        else:
+            log_result("predictions/upcoming_14days", True, "Got 0 matches (may be off-season)", {"count": 0})
+        
+        return data
+        
+    except Exception as e:
+        log_result("predictions/upcoming_14days", False, f"Exception: {str(e)}", None)
+        return None
+
 def test_bet_of_the_day():
     """Test GET /api/predictions/bet-of-the-day"""
     print("\n" + "="*80)
@@ -522,6 +580,314 @@ def test_match_detail(match_id: int):
         log_result(f"match/{match_id}", False, f"Exception: {str(e)}", None)
         return None
 
+def test_global_predictions_k_league():
+    """Test GET /api/global/predictions/tournament/410?limit=3 (K League 1)"""
+    print("\n" + "="*80)
+    print("TEST 11: GET /api/global/predictions/tournament/410?limit=3 (K League 1)")
+    print("="*80)
+    
+    try:
+        time.sleep(7)  # Rate limit
+        response = requests.get(f"{BASE_URL}/global/predictions/tournament/410?limit=3", timeout=60)
+        
+        if response.status_code >= 500:
+            log_result("global/predictions/k-league", False, f"5xx error: {response.status_code}", response.text)
+            return None
+        
+        if response.status_code != 200:
+            log_result("global/predictions/k-league", False, f"Non-200 status: {response.status_code}", response.text)
+            return None
+        
+        data = response.json()
+        
+        # Check for graceful error handling
+        if "error" in data:
+            if data.get("count") == 0 and "matches" in data and data["matches"] == []:
+                log_result("global/predictions/k-league", True, 
+                          f"Graceful error handling: {data.get('error')}", data)
+                return data
+            else:
+                log_result("global/predictions/k-league", False, f"Error response: {data.get('error')}", data)
+                return None
+        
+        if "count" not in data or "matches" not in data:
+            log_result("global/predictions/k-league", False, "Missing count or matches key", data)
+            return None
+        
+        matches = data["matches"]
+        if not isinstance(matches, list):
+            log_result("global/predictions/k-league", False, "matches is not a list", matches)
+            return None
+        
+        if data["count"] < 1:
+            log_result("global/predictions/k-league", False, "Expected count >= 1, got 0", data)
+            return None
+        
+        # Validate each match has prediction with required structure
+        for i, match in enumerate(matches):
+            if "prediction" not in match or match["prediction"] is None:
+                log_result("global/predictions/k-league", False, f"Match {i} missing prediction", match)
+                return None
+            
+            pred = match["prediction"]
+            
+            # Check probs structure
+            if "probs" not in pred:
+                log_result("global/predictions/k-league", False, f"Match {i} prediction missing probs", pred)
+                return None
+            
+            probs = pred["probs"]
+            required_probs = ["home", "draw", "away"]
+            for p in required_probs:
+                if p not in probs:
+                    log_result("global/predictions/k-league", False, f"Match {i} probs missing {p}", probs)
+                    return None
+                if not (0 <= probs[p] <= 100):
+                    log_result("global/predictions/k-league", False, 
+                              f"Match {i} probs.{p}={probs[p]} outside 0-100 range", probs)
+                    return None
+            
+            # Check best_bet structure
+            if "best_bet" not in pred:
+                log_result("global/predictions/k-league", False, f"Match {i} prediction missing best_bet", pred)
+                return None
+            
+            best_bet = pred["best_bet"]
+            required_bet_keys = ["market", "pick", "confidence"]
+            for key in required_bet_keys:
+                if key not in best_bet:
+                    log_result("global/predictions/k-league", False, 
+                              f"Match {i} best_bet missing {key}", best_bet)
+                    return None
+            
+            if not (0 <= best_bet["confidence"] <= 100):
+                log_result("global/predictions/k-league", False, 
+                          f"Match {i} best_bet.confidence={best_bet['confidence']} outside 0-100 range", 
+                          best_bet)
+                return None
+        
+        log_result("global/predictions/k-league", True, 
+                  f"Got {len(matches)} K League 1 matches with valid predictions",
+                  {"sample_prediction": matches[0]["prediction"]})
+        
+        return data
+        
+    except Exception as e:
+        log_result("global/predictions/k-league", False, f"Exception: {str(e)}", None)
+        return None
+
+def test_global_predictions_chinese_super_league():
+    """Test GET /api/global/predictions/tournament/649?limit=3 (Chinese Super League)"""
+    print("\n" + "="*80)
+    print("TEST 12: GET /api/global/predictions/tournament/649?limit=3 (Chinese Super League)")
+    print("="*80)
+    
+    try:
+        time.sleep(7)  # Rate limit
+        response = requests.get(f"{BASE_URL}/global/predictions/tournament/649?limit=3", timeout=60)
+        
+        if response.status_code >= 500:
+            log_result("global/predictions/csl", False, f"5xx error: {response.status_code}", response.text)
+            return None
+        
+        if response.status_code != 200:
+            log_result("global/predictions/csl", False, f"Non-200 status: {response.status_code}", response.text)
+            return None
+        
+        data = response.json()
+        
+        # Check for graceful error handling
+        if "error" in data:
+            if data.get("count") == 0 and "matches" in data and data["matches"] == []:
+                log_result("global/predictions/csl", True, 
+                          f"Graceful error handling: {data.get('error')}", data)
+                return data
+            else:
+                log_result("global/predictions/csl", False, f"Error response: {data.get('error')}", data)
+                return None
+        
+        if "count" not in data or "matches" not in data:
+            log_result("global/predictions/csl", False, "Missing count or matches key", data)
+            return None
+        
+        matches = data["matches"]
+        if not isinstance(matches, list):
+            log_result("global/predictions/csl", False, "matches is not a list", matches)
+            return None
+        
+        if data["count"] < 1:
+            log_result("global/predictions/csl", False, "Expected count >= 1, got 0", data)
+            return None
+        
+        # Validate prediction structure (same as K League test)
+        for i, match in enumerate(matches):
+            if "prediction" not in match or match["prediction"] is None:
+                log_result("global/predictions/csl", False, f"Match {i} missing prediction", match)
+                return None
+            
+            pred = match["prediction"]
+            
+            if "probs" not in pred or "best_bet" not in pred:
+                log_result("global/predictions/csl", False, f"Match {i} prediction incomplete", pred)
+                return None
+            
+            probs = pred["probs"]
+            for p in ["home", "draw", "away"]:
+                if p not in probs or not (0 <= probs[p] <= 100):
+                    log_result("global/predictions/csl", False, f"Match {i} probs invalid", probs)
+                    return None
+            
+            best_bet = pred["best_bet"]
+            if not all(k in best_bet for k in ["market", "pick", "confidence"]):
+                log_result("global/predictions/csl", False, f"Match {i} best_bet incomplete", best_bet)
+                return None
+            
+            if not (0 <= best_bet["confidence"] <= 100):
+                log_result("global/predictions/csl", False, f"Match {i} confidence out of range", best_bet)
+                return None
+        
+        log_result("global/predictions/csl", True, 
+                  f"Got {len(matches)} Chinese Super League matches with valid predictions",
+                  {"sample_prediction": matches[0]["prediction"]})
+        
+        return data
+        
+    except Exception as e:
+        log_result("global/predictions/csl", False, f"Exception: {str(e)}", None)
+        return None
+
+def test_global_predictions_allsvenskan():
+    """Test GET /api/global/predictions/tournament/40?limit=2 (Allsvenskan) - should gracefully handle no data"""
+    print("\n" + "="*80)
+    print("TEST 13: GET /api/global/predictions/tournament/40?limit=2 (Allsvenskan - graceful error)")
+    print("="*80)
+    
+    try:
+        time.sleep(7)  # Rate limit
+        response = requests.get(f"{BASE_URL}/global/predictions/tournament/40?limit=2", timeout=60)
+        
+        if response.status_code >= 500:
+            log_result("global/predictions/allsvenskan", False, 
+                      f"5xx error (should return 200 with error message): {response.status_code}", 
+                      response.text)
+            return None
+        
+        if response.status_code != 200:
+            log_result("global/predictions/allsvenskan", False, 
+                      f"Non-200 status (expected 200 with graceful error): {response.status_code}", 
+                      response.text)
+            return None
+        
+        data = response.json()
+        
+        # MUST have graceful error structure
+        if "count" not in data or "matches" not in data:
+            log_result("global/predictions/allsvenskan", False, 
+                      "Missing count or matches key (required for graceful error)", data)
+            return None
+        
+        if data["count"] != 0:
+            # If there's data, validate it
+            matches = data["matches"]
+            if matches:
+                log_result("global/predictions/allsvenskan", True, 
+                          f"Got {len(matches)} Allsvenskan matches (season data available)",
+                          {"sample": matches[0] if matches else None})
+                return data
+        
+        # Check for graceful error message
+        if "error" not in data:
+            log_result("global/predictions/allsvenskan", False, 
+                      "Expected 'error' field when count=0 (graceful error handling)", data)
+            return None
+        
+        error_msg = data["error"]
+        if "Season data unavailable" not in error_msg and "quota" not in error_msg.lower():
+            log_result("global/predictions/allsvenskan", False, 
+                      f"Error message doesn't mention season/quota: {error_msg}", data)
+            return None
+        
+        if data["matches"] != []:
+            log_result("global/predictions/allsvenskan", False, 
+                      "matches should be empty array when count=0", data)
+            return None
+        
+        log_result("global/predictions/allsvenskan", True, 
+                  f"Graceful error handling confirmed: {error_msg}", data)
+        
+        return data
+        
+    except Exception as e:
+        log_result("global/predictions/allsvenskan", False, f"Exception: {str(e)}", None)
+        return None
+
+def test_global_predictions_live():
+    """Test GET /api/global/predictions/live?limit=6 - live matches worldwide with predictions"""
+    print("\n" + "="*80)
+    print("TEST 14: GET /api/global/predictions/live?limit=6 (Live worldwide matches)")
+    print("="*80)
+    
+    try:
+        time.sleep(7)  # Rate limit
+        response = requests.get(f"{BASE_URL}/global/predictions/live?limit=6", timeout=60)
+        
+        if response.status_code >= 500:
+            log_result("global/predictions/live", False, f"5xx error: {response.status_code}", response.text)
+            return None
+        
+        if response.status_code != 200:
+            log_result("global/predictions/live", False, f"Non-200 status: {response.status_code}", response.text)
+            return None
+        
+        data = response.json()
+        
+        # Check for API quota error (graceful)
+        if "error" in data:
+            if data.get("count") == 0 and "matches" in data:
+                log_result("global/predictions/live", True, 
+                          f"Graceful error (API quota): {data.get('error')}", data)
+                return data
+            else:
+                log_result("global/predictions/live", False, f"Error response: {data.get('error')}", data)
+                return None
+        
+        if "count" not in data or "matches" not in data:
+            log_result("global/predictions/live", False, "Missing count or matches key", data)
+            return None
+        
+        matches = data["matches"]
+        if not isinstance(matches, list):
+            log_result("global/predictions/live", False, "matches is not a list", matches)
+            return None
+        
+        if not matches:
+            log_result("global/predictions/live", True, 
+                      "No live matches currently (expected if no games in progress)", {"count": 0})
+            return data
+        
+        # Validate matches have predictions
+        for i, match in enumerate(matches):
+            # Prediction may be None for some live matches (that's ok)
+            if "prediction" in match and match["prediction"] is not None:
+                pred = match["prediction"]
+                if "probs" in pred and "best_bet" in pred:
+                    # Quick validation
+                    probs = pred["probs"]
+                    if not all(k in probs for k in ["home", "draw", "away"]):
+                        log_result("global/predictions/live", False, 
+                                  f"Match {i} prediction probs incomplete", pred)
+                        return None
+        
+        log_result("global/predictions/live", True, 
+                  f"Got {len(matches)} live matches (predictions may be partial from cache)",
+                  {"sample": matches[0] if matches else None})
+        
+        return data
+        
+    except Exception as e:
+        log_result("global/predictions/live", False, f"Exception: {str(e)}", None)
+        return None
+
 def test_cache_functionality():
     """Test that cache returns same data instantly on second call"""
     print("\n" + "="*80)
@@ -597,8 +963,20 @@ if __name__ == "__main__":
     print("Starting NerdyStats Backend API Tests")
     print(f"Base URL: {BASE_URL}")
     print("Note: Sleeping 7s between distinct endpoint calls for rate limiting")
+    print("\n" + "="*80)
+    print("TESTING WORLDWIDE PREDICTIONS BUG FIX")
+    print("="*80)
     
-    # Run tests
+    # NEW TESTS: Worldwide predictions (SportApi7 integration)
+    print("\n### NEW WORLDWIDE PREDICTION ENDPOINTS ###")
+    test_global_predictions_k_league()
+    test_global_predictions_chinese_super_league()
+    test_global_predictions_allsvenskan()
+    test_global_predictions_live()
+    test_predictions_upcoming_expanded()
+    
+    # REGRESSION TESTS: Existing endpoints
+    print("\n### REGRESSION TESTS (Existing Endpoints) ###")
     test_competitions()
     matches_data = test_matches_today()
     test_predictions_today()
