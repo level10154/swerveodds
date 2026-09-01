@@ -7,6 +7,10 @@ from typing import Any
 
 HOME_ADVANTAGE = 0.35  # xG-ish boost for home
 
+# Bet of the Day config - tunable without touching selection logic below.
+BET_CONFIDENCE_THRESHOLD = 60  # Minimum best_bet confidence (%) to qualify as a pick
+MAX_BETS_PER_DAY = 8            # Hard cap on number of picks surfaced per day
+
 
 def _team_form_stats(matches: list[dict], team_id: int, limit: int = 10) -> dict:
     """Compute avg goals scored/conceded, points per game from finished matches."""
@@ -166,3 +170,21 @@ def predict(home_matches: list[dict], away_matches: list[dict], home_id: int, aw
             "confidence": round(best["prob"] * 100),
         },
     }
+
+
+def select_bets_of_day(
+    candidates: list[dict],
+    threshold: float = BET_CONFIDENCE_THRESHOLD,
+    max_picks: int = MAX_BETS_PER_DAY,
+) -> list[dict]:
+    """Bet of the Day selector.
+
+    Given a list of `{"match": ..., "prediction": ...}` candidates (each
+    prediction produced by `predict()` above, using the same 1X2 / Over-Under /
+    BTTS comparison logic - only the surfacing rule changes here), return every
+    candidate whose `best_bet.confidence` exceeds `threshold`, ranked highest to
+    lowest, capped at `max_picks` results.
+    """
+    qualified = [c for c in candidates if c["prediction"]["best_bet"]["confidence"] > threshold]
+    qualified.sort(key=lambda c: -c["prediction"]["best_bet"]["confidence"])
+    return qualified[:max_picks]

@@ -5,14 +5,15 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any
 
 import football_api as fa
-import sports_db as tsdb
+import api_5dollar as f5  # 5DollarFootballAPI (replaces TheSportsDB)
 import api_football as sa7  # SportApi7 (SofaScore mirror)
-from predictor import predict
+from predictor import predict, select_bets_of_day, BET_CONFIDENCE_THRESHOLD
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -73,7 +74,7 @@ async def competitions():
 
 @api_router.get("/world/leagues")
 async def world_leagues():
-    """Combined worldwide leagues (football-data + TheSportsDB curated + API-Football if subscribed)."""
+    """Combined worldwide leagues (football-data + 5DollarFootballAPI curated + SportApi7 if subscribed)."""
     combined = []
     for c in fa.TOP_COMPETITIONS:
         combined.append({
@@ -85,23 +86,17 @@ async def world_leagues():
             "source": "football-data",
             "predictions": True,
         })
-    # TheSportsDB curated leagues (already dedup'd against football-data)
-    for l in tsdb.WORLD_LEAGUES:
-        # Look up badge from cached TheSportsDB league info (7-day cache)
-        emblem = None
-        try:
-            info = await tsdb.lookup_league(db, l["id"])
-            league = ((info.get("leagues") or []) + [{}])[0]
-            emblem = league.get("strBadge") or league.get("strLogo")
-        except Exception:
-            pass
+    # 5DollarFootballAPI curated leagues (already dedup'd against football-data).
+    # Badge is a generated avatar - zero extra API calls needed to stay well
+    # under the 10 req/min budget.
+    for l in f5.WORLD_LEAGUES:
         combined.append({
-            "id": f"tsdb-{l['id']}",
+            "id": f"fivedollar-{l['code']}",
             "code": l["code"],
             "name": l["name"],
             "country": l["country"],
-            "emblem": emblem,
-            "source": "thesportsdb",
+            "emblem": f5.avatar_url(l["name"]),
+            "source": "fivedollarfootball",
             "predictions": False,
         })
     # SportApi7 tournaments (only unique ones not covered above)
@@ -123,7 +118,7 @@ async def world_leagues():
 
 @api_router.get("/world/matches/today")
 async def world_matches_today():
-    """Aggregate today's matches from football-data + TheSportsDB + SportApi7 live."""
+    """Aggregate today's matches from football-data + 5DollarFootballAPI + SportApi7 live."""
     from datetime import datetime as _dt
     date = _dt.utcnow().strftime("%Y-%m-%d")
     matches = []
@@ -140,13 +135,12 @@ async def world_matches_today():
             matches.append(sa7.normalize_event(e))
     except Exception as e:
         logger.warning(f"sa7 live failed: {e}")
-    # TheSportsDB day events
+    # 5DollarFootballAPI - single batched call covers every league for today
     try:
-        d = await tsdb.day_events(db, date)
-        for e in d.get("events") or []:
-            matches.append(tsdb.normalize_event(e))
+        for fixture in await f5.fixtures_for_day(db, date):
+            matches.append(f5.normalize_fixture(fixture))
     except Exception as e:
-        logger.warning(f"tsdb day failed: {e}")
+        logger.warning(f"5dollar day failed: {e}")
     # Dedupe by (home,away,date)
     seen = set()
     unique = []
@@ -161,66 +155,64 @@ async def world_matches_today():
 
 @api_router.get("/world/league/{league_ref}/next")
 async def world_league_next(league_ref: str):
-    """Next fixtures for a TheSportsDB league. league_ref must be like 'tsdb-4328'."""
-    if not league_ref.startswith("tsdb-"):
-        raise HTTPException(status_code=400, detail="Expected league ref format tsdb-<id>")
-    lid = league_ref.split("-", 1)[1]
+    """Next & recent fixtures for a 5DollarFootballAPI curated league. league_ref must be like 'fivedollar-MLS'."""
+    if not league_ref.startswith("fivedollar-"):
+        raise HTTPException(status_code=400, detail="Expected league ref format fivedollar-<code>")
+    code = league_ref.split("-", 1)[1]
+    league = next((l for l in f5.WORLD_LEAGUES if l["code"] == code), None)
+    if not league:
+        raise HTTPException(status_code=404, detail="Unknown league code")
+    # Bounded, timed window: 5 days forward + 3 back (8 day-calls worst case),
+    # each day fetch shared/cached across every league. Hard-capped at 25s so a
+    # cold cache (or an invalid 5dollar key) always degrades to an empty list
+    # instead of hanging past the gateway's request timeout.
+    async def _fetch_window():
+        upcoming_raw = await f5.league_fixtures_window(db, league["name"], days=5, forward=True)
+        recent_raw = await f5.league_fixtures_window(db, league["name"], days=3, forward=False)
+        return upcoming_raw, recent_raw
     try:
-        info = await tsdb.lookup_league(db, lid)
-        nxt = await tsdb.next_league_events(db, lid)
-        past = await tsdb.past_league_events(db, lid)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
-    league = ((info.get("leagues") or []) + [{}])[0]
+        upcoming_raw, recent_raw = await asyncio.wait_for(_fetch_window(), timeout=25)
+    except Exception:
+        upcoming_raw, recent_raw = [], []
+    upcoming = [f5.normalize_fixture(f) for f in upcoming_raw if (f.get("status") or "").lower() not in ("ft", "finished", "aet")]
+    recent = [f5.normalize_fixture(f) for f in recent_raw if (f.get("status") or "").lower() in ("ft", "finished", "aet")]
+    upcoming.sort(key=lambda m: m.get("utcDate") or "")
+    recent.sort(key=lambda m: m.get("utcDate") or "", reverse=True)
     return {
         "league": {
-            "id": league.get("idLeague"),
-            "name": league.get("strLeague"),
-            "country": league.get("strCountry"),
-            "badge": league.get("strBadge"),
-            "logo": league.get("strLogo"),
-            "description": (league.get("strDescriptionEN") or "")[:600],
-            "currentSeason": league.get("strCurrentSeason"),
-            "website": league.get("strWebsite"),
+            "id": league["id"],
+            "name": league["name"],
+            "country": league["country"],
+            "badge": f5.avatar_url(league["name"]),
+            "logo": f5.avatar_url(league["name"]),
+            "description": "Fixtures & odds for this league are powered by 5DollarFootballAPI.",
+            "currentSeason": None,
+            "website": None,
         },
-        "upcoming": [tsdb.normalize_event(e) for e in (nxt.get("events") or [])],
-        "recent": [tsdb.normalize_event(e) for e in (past.get("events") or [])][:10],
+        "upcoming": upcoming[:10],
+        "recent": recent[:10],
     }
 
 
 @api_router.get("/world/league/{league_ref}/table")
 async def world_league_table(league_ref: str):
-    if not league_ref.startswith("tsdb-"):
-        raise HTTPException(status_code=400, detail="Expected league ref format tsdb-<id>")
-    lid = league_ref.split("-", 1)[1]
-    info = await tsdb.lookup_league(db, lid)
-    league = ((info.get("leagues") or []) + [{}])[0]
-    season = league.get("strCurrentSeason") or "2025-2026"
-    tbl = await tsdb.league_table(db, lid, season)
-    rows = tbl.get("table") or []
+    if not league_ref.startswith("fivedollar-"):
+        raise HTTPException(status_code=400, detail="Expected league ref format fivedollar-<code>")
+    code = league_ref.split("-", 1)[1]
+    league = next((l for l in f5.WORLD_LEAGUES if l["code"] == code), None)
+    if not league:
+        raise HTTPException(status_code=404, detail="Unknown league code")
+    # 5DollarFootballAPI does not expose a standings endpoint - return the same
+    # graceful "not available" shape the frontend already handles.
     return {
         "league": {
-            "id": league.get("idLeague"),
-            "name": league.get("strLeague"),
-            "country": league.get("strCountry"),
-            "badge": league.get("strBadge"),
-            "season": season,
+            "id": league["id"],
+            "name": league["name"],
+            "country": league["country"],
+            "badge": f5.avatar_url(league["name"]),
+            "season": None,
         },
-        "table": [
-            {
-                "position": r.get("intRank"),
-                "team": {"id": r.get("idTeam"), "name": r.get("strTeam"), "crest": r.get("strTeamBadge")},
-                "playedGames": r.get("intPlayed"),
-                "won": r.get("intWin"),
-                "draw": r.get("intDraw"),
-                "lost": r.get("intLoss"),
-                "goalsFor": r.get("intGoalsFor"),
-                "goalsAgainst": r.get("intGoalsAgainst"),
-                "goalDifference": r.get("intGoalDifference"),
-                "points": r.get("intPoints"),
-            }
-            for r in rows
-        ],
+        "table": [],
     }
 
 
@@ -478,34 +470,33 @@ async def predictions_upcoming(days: int = 14, limit: int = 24):
 
 @api_router.get("/predictions/bet-of-the-day")
 async def bet_of_the_day():
+    """Bet of the Day - returns EVERY match whose best_bet confidence exceeds
+    BET_CONFIDENCE_THRESHOLD, ranked highest to lowest, capped at MAX_BETS_PER_DAY.
+    (Underlying 1X2 / Over-Under / BTTS math is unchanged - only how many
+    results get surfaced has changed.)"""
     data = await fa.get_today_matches(db)
     matches = [m for m in data.get("matches", []) if m.get("status") in ("TIMED", "SCHEDULED")]
-    best = None
-    best_match = None
-    best_pred = None
+    candidates = []
     for m in matches[:6]:
         pred = await _build_prediction(m)
-        conf = pred["best_bet"]["confidence"]
-        if best is None or conf > best:
-            best = conf
-            best_match = m
-            best_pred = pred
-    if not best_match:
-        # fallback: pick from next 3 days
+        candidates.append({"match": m, "prediction": pred})
+    picks = select_bets_of_day(candidates)
+    if not picks:
+        # Widen the window to the next 3 days if today has no qualifying picks.
         date_from = datetime.utcnow().strftime("%Y-%m-%d")
         date_to = (datetime.utcnow() + timedelta(days=3)).strftime("%Y-%m-%d")
         data = await fa.get_matches_for_date_range(db, date_from, date_to)
         matches = [m for m in data.get("matches", []) if m.get("status") in ("TIMED", "SCHEDULED")][:10]
+        candidates = []
         for m in matches:
             pred = await _build_prediction(m)
-            conf = pred["best_bet"]["confidence"]
-            if best is None or conf > best:
-                best = conf
-                best_match = m
-                best_pred = pred
-    if not best_match:
-        raise HTTPException(status_code=404, detail="No matches available for bet of the day")
-    return _serialize_match(best_match, best_pred)
+            candidates.append({"match": m, "prediction": pred})
+        picks = select_bets_of_day(candidates)
+    return {
+        "count": len(picks),
+        "threshold": BET_CONFIDENCE_THRESHOLD,
+        "picks": [_serialize_match(c["match"], c["prediction"]) for c in picks],
+    }
 
 
 @api_router.get("/match/{match_id}")

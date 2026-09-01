@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getPredictionsUpcoming, getGlobalTournaments, getGlobalPredictionsTournament, getGlobalPredictionsLive } from "../lib/api";
+import { buildRollingDays, toISODate } from "../lib/dateUtils";
 import MatchCard from "../components/MatchCard";
 import { Zap, Globe, Radio } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
@@ -32,7 +33,8 @@ export default function Predictions() {
 }
 
 function FootballDataPredictions() {
-  const [days, setDays] = useState(14);
+  const days = useMemo(() => buildRollingDays(7), []);
+  const [selectedIdx, setSelectedIdx] = useState(0); // today
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -41,7 +43,7 @@ function FootballDataPredictions() {
     (async () => {
       setLoading(true);
       try {
-        const res = await getPredictionsUpcoming(days, 30);
+        const res = await getPredictionsUpcoming(7, 30);
         if (!alive) return;
         setMatches(res.matches || []);
       } finally {
@@ -49,28 +51,37 @@ function FootballDataPredictions() {
       }
     })();
     return () => { alive = false; };
-  }, [days]);
+  }, []);
+
+  const dayMatches = useMemo(() => {
+    const selectedDate = toISODate(days[selectedIdx]);
+    return matches.filter((m) => (m.utcDate || "").slice(0, 10) === selectedDate);
+  }, [matches, days, selectedIdx]);
 
   return (
     <>
-      <div className="flex items-center gap-2 flex-wrap mb-4">
-        {[{v:1,l:"Today"},{v:3,l:"Next 3 days"},{v:7,l:"Next week"},{v:14,l:"Next 2 weeks"},{v:30,l:"Next month"}].map((o) => (
-          <button key={o.v} onClick={()=>setDays(o.v)}
-            className={`px-3 py-1.5 rounded-md text-sm border transition ${
-              days===o.v ? "bg-purple-500/20 border-purple-500/50 text-white" : "bg-white/[0.03] border-white/5 text-slate-300 hover:bg-white/10"
-            }`}>{o.l}</button>
-        ))}
+      <div className="flex items-center gap-2 flex-wrap mb-4 overflow-x-auto no-scrollbar pb-1">
+        {days.map((d, i) => {
+          const label = i === 0 ? "Today" : i === 1 ? "Tomorrow" : d.toLocaleDateString([], { weekday: "short" });
+          const sub = i > 1 ? ` ${d.getDate()}` : "";
+          return (
+            <button key={i} onClick={() => setSelectedIdx(i)}
+              className={`px-3 py-1.5 rounded-md text-sm border transition whitespace-nowrap ${
+                selectedIdx === i ? "bg-purple-500/20 border-purple-500/50 text-white" : "bg-white/[0.03] border-white/5 text-slate-300 hover:bg-white/10"
+              }`}>{label}{sub}</button>
+          );
+        })}
       </div>
       <p className="text-xs text-slate-500 mb-4">Premier League, La Liga, Bundesliga, Serie A, Ligue 1 resume Aug 6–Aug 21. Currently active: Brasileirão.</p>
       {loading ? (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(9)].map((_,i)=>(<div key={i} className="nt-card rounded-xl h-40 animate-pulse" />))}
         </div>
-      ) : matches.length === 0 ? (
-        <div className="nt-card rounded-xl p-8 text-center text-slate-400">No matches with predictions in this window.</div>
+      ) : dayMatches.length === 0 ? (
+        <div className="nt-card rounded-xl p-8 text-center text-slate-400">No matches with predictions on this day.</div>
       ) : (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {matches.map((m) => <MatchCard key={m.id} match={m} />)}
+          {dayMatches.map((m) => <MatchCard key={m.id} match={m} />)}
         </div>
       )}
     </>

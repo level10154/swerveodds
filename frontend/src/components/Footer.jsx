@@ -26,11 +26,11 @@ export default function Footer() {
           </ul>
         </div>
         <div>
-          <div className="text-xs uppercase text-slate-500 font-semibold mb-3">Stats Hub</div>
+          <div className="text-xs uppercase text-slate-500 font-semibold mb-3">Explore</div>
           <ul className="space-y-2 text-sm text-slate-300">
-            <li><Link to="/stats">Standings</Link></li>
             <li><Link to="/leagues">Leagues</Link></li>
-            <li><Link to="/stats">Top Scorers</Link></li>
+            <li><Link to="/live">Live Now</Link></li>
+            <li><Link to="/league/PL">League Standings</Link></li>
           </ul>
         </div>
         <div>

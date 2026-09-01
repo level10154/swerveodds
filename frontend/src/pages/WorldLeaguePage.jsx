@@ -10,12 +10,24 @@ export default function WorldLeaguePage() {
   const [data, setData] = useState(null);
   const [table, setTable] = useState(null);
   const [tab, setTab] = useState("fixtures");
+  const [errored, setErrored] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    setData(null); setTable(null);
-    getWorldLeagueNext(ref).then((d) => { if (alive) setData(d); }).catch(() => {});
-    getWorldLeagueTable(ref).then((t) => { if (alive) setTable(t); }).catch(() => {});
+    setData(null); setTable(null); setErrored(false);
+    // Client-side timeout guard: never leave the page on an infinite skeleton
+    // even if the origin call is unusually slow - always resolve to an empty,
+    // renderable shape instead.
+    const withTimeout = (p, ms) => Promise.race([
+      p,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+    ]);
+    withTimeout(getWorldLeagueNext(ref), 30000)
+      .then((d) => { if (alive) setData(d); })
+      .catch(() => { if (alive) { setErrored(true); setData({ league: {}, upcoming: [], recent: [] }); } });
+    withTimeout(getWorldLeagueTable(ref), 30000)
+      .then((t) => { if (alive) setTable(t); })
+      .catch(() => { if (alive) setTable({ league: {}, table: [] }); });
     return () => { alive = false; };
   }, [ref]);
 
@@ -41,7 +53,7 @@ export default function WorldLeaguePage() {
 
       <div className="nt-card rounded-lg p-3 mb-4 text-xs text-slate-400 flex items-start gap-2">
         <Info className="w-4 h-4 text-cyan-400 mt-0.5 flex-shrink-0" />
-        <div>Powered by TheSportsDB (free tier). Limited to 1 next event per league; upgrade the source key for full schedules. Predictions not available for this league on the free tier.</div>
+        <div>Powered by 5DollarFootballAPI. Standings aren't available on this plan yet; upgrade for full schedules and tables. Predictions not available for this league.</div>
       </div>
 
       <Tabs value={tab} onValueChange={setTab}>
@@ -75,7 +87,7 @@ export default function WorldLeaguePage() {
           {!table ? (
             <div className="nt-card rounded-xl h-64 animate-pulse" />
           ) : (table.table || []).length === 0 ? (
-            <div className="nt-card rounded-xl p-8 text-center text-slate-400">Standings not available for this league on the free tier.</div>
+            <div className="nt-card rounded-xl p-8 text-center text-slate-400">Standings not available for this league yet.</div>
           ) : (
             <div className="nt-card rounded-xl overflow-hidden">
               <table className="w-full text-sm">

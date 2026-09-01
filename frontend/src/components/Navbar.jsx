@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, NavLink } from "react-router-dom";
-import { Menu, X, Zap, Trophy, Calendar, BarChart3, Sparkles, Search, Radio } from "lucide-react";
+import { Menu, X, Zap, Trophy, Calendar, Sparkles, Search, Radio } from "lucide-react";
 import { Button } from "./ui/button";
 
 const navItems = [
@@ -9,7 +9,6 @@ const navItems = [
   { to: "/matches", label: "All Matches", icon: Calendar },
   { to: "/predictions", label: "Predictions", icon: Zap },
   { to: "/leagues", label: "Leagues", icon: Trophy },
-  { to: "/stats", label: "Stats Hub", icon: BarChart3 },
 ];
 
 export default function Navbar() {

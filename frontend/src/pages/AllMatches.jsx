@@ -1,21 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { getMatchesRange, getWorldMatchesToday } from "../lib/api";
+import { buildRollingDays, toISODate } from "../lib/dateUtils";
 import MatchCard from "../components/MatchCard";
 import { Button } from "../components/ui/button";
 import { Globe } from "lucide-react";
 
-function toISODate(d) { return d.toISOString().slice(0, 10); }
-
 export default function AllMatches() {
-  const dates = useMemo(() => {
-    const today = new Date();
-    return Array.from({ length: 9 }, (_, i) => {
-      const d = new Date(today);
-      d.setDate(today.getDate() + (i - 2));
-      return d;
-    });
-  }, []);
-  const [selectedIdx, setSelectedIdx] = useState(2); // today
+  const dates = useMemo(() => buildRollingDays(7), []);
+  const [selectedIdx, setSelectedIdx] = useState(0); // today
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [includeWorld, setIncludeWorld] = useState(true);
@@ -29,11 +21,16 @@ export default function AllMatches() {
       try {
         const res = await getMatchesRange(d, toISODate(next), false);
         let list = res.matches || [];
-        // Only augment "today" with worldwide feed (TheSportsDB day events)
-        const isToday = selectedIdx === 2;
+        // Only augment "today" with worldwide feed (5DollarFootballAPI day events).
+        // Hard 8s client-side timeout so a slow/unavailable worldwide source
+        // never blocks the core football-data.org matches from rendering.
+        const isToday = selectedIdx === 0;
         if (isToday && includeWorld) {
           try {
-            const wr = await getWorldMatchesToday();
+            const wr = await Promise.race([
+              getWorldMatchesToday(),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("world-timeout")), 8000)),
+            ]);
             const existing = new Set(list.map((m) => `${(m.homeTeam?.name || "").toLowerCase()}-${(m.awayTeam?.name || "").toLowerCase()}`));
             for (const m of wr.matches || []) {
               const k = `${(m.homeTeam?.name || "").toLowerCase()}-${(m.awayTeam?.name || "").toLowerCase()}`;
@@ -77,9 +74,8 @@ export default function AllMatches() {
 
       <div className="mt-6 flex items-center gap-2 overflow-x-auto no-scrollbar pb-2">
         {dates.map((d, i) => {
-          const isToday = i === 2;
           const active = i === selectedIdx;
-          const label = isToday ? "Today" : d.toLocaleDateString([], { weekday: "short" });
+          const label = i === 0 ? "Today" : i === 1 ? "Tomorrow" : d.toLocaleDateString([], { weekday: "short" });
           const sub = d.toLocaleDateString([], { month: "short", day: "numeric" });
           return (
             <button

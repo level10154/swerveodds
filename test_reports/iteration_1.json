@@ -1,0 +1,48 @@
+{
+  "summary": "Full backend + frontend regression of the 5-step change round (StatsHub removal, rolling 7-day tabs, multi-pick Bet of the Day, 5DollarFootballAPI adapter). Backend: 16/17 pytest tests pass (94%) - the only failure is /api/world/league/{ref}/next which takes ~157s at origin and therefore returns 502 via the ingress (60s limit). Frontend: StatsHub fully gone, 7-tab rolling window works on /matches and /predictions, Bet of the Day shows 8 ranked picks with 'Why this pick?' panels, Home hero shows exactly one card with no 'undefined', Leagues 'Worldwide' filter works. The reported intermittent hang did NOT reproduce for /api/world/matches/today or /api/matches/range (1.8s-7.6s), but /world-league/fivedollar-MLS hangs on an infinite loading skeleton (>90s, never resolves).",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/world/league/fivedollar-{CODE}/next", "issue": "Origin takes ~157s (measured direct on 127.0.0.1:8001) so the public URL returns Cloudflare 502 after 60s. RCA: league_fixtures_window() is called twice (days=14 forward + days=10 backward) = 24 sequential day fetches, each throttled by the 10 req/min token bucket (~6s/token) => ~144s minimum. Worse, error responses (401 invalid_api_key) are NOT cached, so every request repeats the full 24-call walk forever. Not graceful degradation: it is a hard 502 for the user.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/predictions/bet-of-the-day", "issue": "On a cold cache with concurrent load it exceeded the 60s ingress limit and returned 502 (observed once during a parallel test run; serial runs return in <1s warm). Consider capping per-request football-data calls or pre-warming, since 502 has no client-side fallback."},
+      {"endpoint": "GET /api/world/league/{ref}/next", "issue": "5dollar HTTP-error responses are not negatively cached in fivedollar_cache, so an invalid/expired key guarantees repeated full-cost walks on every page view (also burns the 10 req/min budget)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "WorldLeaguePage (/world-league/fivedollar-MLS)", "issue": "Infinite loading skeleton - page never renders (verified >90s). getWorldLeagueNext().catch(() => {}) swallows the 502 and `if (!data) return skeleton` has no error/empty/timeout state. Needs a client timeout + error card (and/or the backend fix above).", "selector": ".nt-card.animate-pulse", "priority": "CRITICAL"},
+      {"component": "Predictions -> Worldwide tab", "issue": "React console error: 'Encountered two children with the same key' when rendering the SportApi7 tournament chip list (duplicate tournament ids/names).", "selector": "tournament chip list", "priority": "MEDIUM"},
+      {"component": "Global", "issue": "No data-testid attributes anywhere in the app (nav links, date tabs, filter chips, pick cards). All automation had to rely on text/CSS selectors, which is brittle.", "selector": "n/a", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "World league detail (fivedollar-*)", "issue": "Banner text '5DollarFootballAPI' and the graceful 'standings not available' state could NOT be verified because the page never leaves the skeleton (blocked by the 502 above). Code inspection confirms the copy is correct and /api/world/league/fivedollar-MLS/table correctly returns 200 with table: [].", "affected_selectors": ["/world-league/fivedollar-MLS"]}
+    ],
+    "design_issues": [
+      {"screen": "Leagues (/leagues)", "issues": ["Near-duplicate league entries across sources, e.g. 'Argentine Primera Division' (fivedollarfootball) next to 'Argentine Primera' (sportapi7), 'Australian A-League' vs 'A-League', 'Belgian Pro League' vs 'Jupiter Pro League', 'Chinese Super League' vs 'Chinese League 1' - dedupe only matches exact lowercase names.", "SportApi7 cards have emblem: null and render as empty grey squares next to the generated avatar badges of the 5dollar cards - visually inconsistent; add an initials placeholder."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix /api/world/league/{ref}/next latency: shrink the day window (e.g. 3 forward + 2 back), fetch days concurrently within the bucket budget, add an overall asyncio.wait_for (<25s) returning empty upcoming/recent, and negatively cache 4xx/5xx 5dollar responses (short TTL) so an invalid key costs one call not 24.",
+    "Add a client-side timeout + error/empty state to WorldLeaguePage so a failing /next never leaves an infinite skeleton.",
+    "Fix duplicate React key warning in the Predictions Worldwide tournament list.",
+    "Improve league dedupe on /api/world/leagues (fuzzy/alias matching) and add an initials fallback emblem for sportapi7 leagues.",
+    "Add data-testid attributes to nav links, day tabs, source tabs, and pick cards."
+  ],
+  "critical_code_review_comments": [
+    "api_5dollar._get(): non-2xx responses are never written to fivedollar_cache, so a permanently invalid key means unbounded repeat cost - add negative caching.",
+    "api_5dollar.league_fixtures_window(): sequential per-day fetches multiplied by a 6s/token bucket makes worst-case latency ~144s, which is structurally incompatible with the 60s ingress timeout.",
+    "WorldLeaguePage.jsx: .catch(() => {}) with a single `if (!data)` skeleton branch is an anti-pattern - no error state means indefinite spinner.",
+    "api_5dollar.normalize_fixture() uses datetime.utcfromtimestamp() (deprecated in Python 3.12+); prefer datetime.fromtimestamp(ts, timezone.utc).",
+    "dateUtils.toISODate() uses toISOString() on a local-midnight Date; in a negative-UTC-offset browser this yields the previous day and would shift every tab by one day. Use local getFullYear/getMonth/getDate formatting. (Container is UTC so it passed here.)"
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "94% (16/17 pytest)", "frontend": "88% (all pages OK except /world-league/* infinite skeleton)"},
+  "seed_data_creation": "None - public read-only data site, no auth.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "N/A - no auth in this app; /app/memory/test_credentials.md not required and not used.",
+  "context_for_next_testing_agent": "Regression suite lives at /app/backend/tests/backend_test.py (run serially: pytest tests/backend_test.py -o addopts='' -p no:randomly; the pytest.ini default enables xdist which causes false 502s by hammering rate-limited endpoints in parallel). Verified PASSING: /api/, /api/competitions, /api/standings/PL, /api/predictions/bet-of-the-day (count/threshold=60/picks[], ranked desc, all >60, cap<=8, no _id leak), /api/world/leagues (sources football-data/fivedollarfootball/sportapi7, no thesportsdb, all fivedollar have avatar emblems), /api/world/matches/today (200, 42 matches, ~1.1s), /api/world/league/fivedollar-MLS/table (200, table: []), 400/404 validation on bad refs, /api/predictions/upcoming, /api/matches/range, /api/matches/today, predictor.select_bets_of_day unit tests. Frontend verified: navbar has exactly Live Now|Bet of the Day|All Matches|Predictions|Leagues; /stats logs 'No routes matched location /stats' and renders only navbar+footer; footer has Explore column; /matches shows 7 tabs [Today Aug 31, Tomorrow Sep 1, Wed Sep 2 ... Sun Sep 6] and tabs 2/3 loaded in 1.9s/7.6s; /predictions shows Today|Tomorrow|Wed 2|...|Sun 6 with client-side filtering and a graceful 'No matches with predictions on this day' for Today; /bet-of-the-day rendered 8 PICK #N cards each with a Why this pick? panel; Home hero has one card, no 'undefined'; /leagues Worldwide chip filters to MLS etc; /live and /league/PL fine. ONLY remaining blocker: /world-league/fivedollar-* infinite skeleton due to the 157s /next endpoint.",
+  "rca_of_the_issue": "DIAGNOSTIC ANSWER for the reported intermittent hang: it did NOT reproduce for /api/world/matches/today or /api/matches/range in headless Chromium - both returned 200 in ~1-2s and /matches finished rendering in 1.8s (Today), 1.9s (Wed) and 7.6s (Thu). No CORS errors, no stalled requests, no need for a hard refresh. So the AllMatches/Predictions hang appears to have been a transient test-environment/cold-cache artifact, not an app bug; the 8s Promise.race guard can stay but is not the fix for anything currently broken. The REAL hang is /world-league/fivedollar-<CODE>: /api/world/league/fivedollar-MLS/next stays pending because the origin needs ~157s (24 token-bucket-throttled day calls x ~6s, none of which are cached since the 5dollar key returns 401 and errors are not negatively cached); Cloudflare cuts it at 60s with a 502, WorldLeaguePage swallows the rejection in .catch(()=>{}) and its `if (!data)` branch renders the skeleton forever. Repro: open /world-league/fivedollar-MLS -> skeleton for 90s+ (only /table returns); curl http://localhost:8001/api/world/league/fivedollar-MLS/next -> 200 in 157.4s; curl the public URL -> 502."
+}

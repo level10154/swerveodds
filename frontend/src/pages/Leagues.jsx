@@ -6,7 +6,7 @@ import { Globe, Sparkles, Search } from "lucide-react";
 export default function Leagues() {
   const [leagues, setLeagues] = useState([]);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all"); // all | predictions | thesportsdb
+  const [filter, setFilter] = useState("all"); // all | predictions | fivedollarfootball
 
   useEffect(() => {
     getWorldLeagues().then((d) => setLeagues(d.leagues || [])).catch(() => {});
@@ -16,7 +16,7 @@ export default function Leagues() {
     const q = query.trim().toLowerCase();
     const filtered = leagues.filter((l) => {
       if (filter === "predictions" && !l.predictions) return false;
-      if (filter === "thesportsdb" && l.source !== "thesportsdb") return false;
+      if (filter === "fivedollarfootball" && l.source !== "fivedollarfootball") return false;
       if (!q) return true;
       return (
         (l.name || "").toLowerCase().includes(q) ||
@@ -53,7 +53,7 @@ export default function Leagues() {
           {[
             { v: "all", l: "All" },
             { v: "predictions", l: "With AI Picks" },
-            { v: "thesportsdb", l: "Worldwide" },
+            { v: "fivedollarfootball", l: "Worldwide" },
           ].map((o) => (
             <button
               key={o.v}

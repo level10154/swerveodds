@@ -39,7 +39,7 @@ export default function Home() {
         // Sequential to avoid rate limit
         const bod = await getBetOfTheDay().catch(() => null);
         if (!alive) return;
-        setBotd(bod);
+        setBotd(bod?.picks?.[0] || null);
         const st = await getStandings("PL").catch(() => null);
         if (!alive) return;
         setStandings(st);
